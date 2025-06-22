@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DeeGee File Uploads</title>
+  <meta charset="UTF-8" />
+  <script src="/static/tus.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #1e1e1e;
+      color: #f0f0f0;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+    }
+
+    input[type="file"] {
+      margin-bottom: 10px;
+    }
+    .file-row {
+      display: grid;
+      grid-template-columns: 1fr 100px 120px;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .filename {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .filesize {
+      color: #bbb;
+      font-size: 0.9em;
+    }
+
+    .download.button {
+      background-color: #008cba;
+      font-size: 13px;
+      padding: 6px 10px;
+      text-align: center;
+      border-radius: 8px; /* ✅ Soft edges */
+    }
+
+    .download.button:hover {
+      background-color: #388e3c;
+    }
+
+    .container {
+      background: #2c2c2c;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.4);
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    button {
+      background-color: #008cba;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      font-size: 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-left: 10px;
+    }
+
+    button:hover {
+      background-color: #005f80;
+    }
+
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      border-radius: 6px;
+      height: 180px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+
+    progress {
+      width: 100%;
+      margin-top: 10px;
+      height: 12px;
+      border-radius: 6px;
+      overflow: hidden;
+      background-color: #444;
+    }
+
+    ul {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    ul li {
+      background: #2a2a2a;
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+      box-shadow: 0 0 4px rgba(0,0,0,0.2);
+    }
+
+    ul li a {
+      color: #4fc3f7;
+      text-decoration: none;
+    }
+
+    ul li a:hover {
+      text-decoration: underline;
+    }
+    ul li .button {
+      font-size: 13px;
+      padding: 6px 10px;
+      margin-left: 10px;
+      background: #1d71a1;
+    }
+    ul li .button:hover {
+      background: #388e3c;
+    }
+    .section {
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📁 DeeGee File Uploads</h1>
+    <input type="file" id="fileInput" />
+    <button onclick="upload()">Upload</button>
+
+    <div class="section">
+      <h2>Upload Log</h2>
+      <pre id="log"></pre>
+      <progress id="progress" value="0" max="100"></progress>
+    </div>
+
+    <div class="section">
+      <h2>Uploaded Files</h2>
+      <ul id="fileList"></ul>
+    </div>
+  </div>
+  <div class="section">
+    <h2>📊 Disk Info </h2>
+    <pre id="lsblkOutput">Loading...</pre>
+  </div>
+
+
+<script>
+tus.log = console.log;
+tus.defaultOptions.debug = true;
+function loadLsblk() {
+  fetch("/lsblk")
+    .then(res => res.json())
+    .then(data => {
+      document.getElementById("lsblkOutput").textContent = data.output || "Error loading lsblk";
+    });
+}
+
+function log(msg) {
+  const logBox = document.getElementById("log");
+  logBox.textContent += msg + "\n";
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function upload() {
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) return;
+
+  const upload = new tus.Upload(file, {
+    endpoint: "/files/",
+    // endpoint: "http://0:0:0:0:8200/files/",
+    // endpoint: "http://192.168.68.71:8200/files/",
+    chunkSize: 5242880,
+    retryDelays: [0, 1000, 3000, 5000],
+    metadata: {
+      name: file.name,
+      type: file.type
+    },
+    fingerprint: function (file) {
+      return Promise.resolve(["tus", file.name, file.type, file.size].join("-"));
+    },
+    onError: function (error) {
+      log("❌ Failed: " + error);
+    },
+    onProgress: function (bytesUploaded, bytesTotal) {
+      const percentage = ((bytesUploaded / bytesTotal) * 100).toFixed(2);
+      log(`⬆️  ${bytesUploaded}/${bytesTotal} (${percentage}%)`);
+      document.getElementById("progress").value = percentage;
+    },
+    onSuccess: function () {
+      log("✅ Upload complete: " + upload.file.name);
+      listFiles();
+
+      const uploadId = upload.url.split("/").pop();
+      fetch("/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: uploadId, filename: file.name })
+      })
+      .then(res => res.json())
+      .then(result => {
+        log("🔧 Finalize result: " + JSON.stringify(result));
+      });
+    }
+  });
+
+  upload.findPreviousUploads().then(function (previousUploads) {
+    if (previousUploads.length) {
+      log("🔁 Resuming previous upload...");
+      upload.resumeFromPreviousUpload(previousUploads[0]);
+    } else {
+      log("🆕 Starting new upload...");
+    }
+    upload.start();
+  });
+}
+
+function listFiles() {
+  fetch("/uploads")
+    .then(res => res.json())
+    .then(files => {
+      const list = document.getElementById("fileList");
+      list.innerHTML = "";
+      files.forEach(file => {
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+        const li = document.createElement("li");
+        li.innerHTML = `
+          <div class="file-row">
+            <span class="filename">${file.name}</span>
+            <span class="filesize">${sizeMB} MB</span>
+            <a class="button download" href="/uploads/${encodeURIComponent(file.name)}" download>📥 Download</a>
+          </div>
+        `;
+
+
+        list.appendChild(li);
+      });
+    });
+}
+
+
+listFiles();
+loadLsblk();
+</script>
+</body>
+</html>
